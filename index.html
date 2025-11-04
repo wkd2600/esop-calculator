@@ -36,7 +36,7 @@
               <input id="currYearSalary" type="text" class="num w-56 rounded-xl border px-3 py-2" placeholder="0" value="0" />
             </label>
             <label class="flex items-center justify-between gap-3">
-              <span class="text-sm text-gray-700">근로소득 외 종합소득액 (원) <span class="text-xs text-gray-500">(이자·배당·사업·기타 등)</span></span>
+              <span class="text-sm text-gray-700">근로소득 외 종합소득금액 (원) <span class="text-xs text-gray-500">(이자·배당·사업·기타 등)</span></span>
               <input id="otherIncome" type="text" class="num w-56 rounded-xl border px-3 py-2" placeholder="0" value="0" />
             </label>
             <label class="flex items-center justify-between gap-3">
@@ -213,8 +213,9 @@
     };
     const fmt = (n) => Number.isFinite(n) ? n.toLocaleString('ko-KR') : '';
 
+    // 입력 필드 목록 (콤마 마스크 적용 대상)
     const allFieldIds = [
-      'prevYearSalary','currYearSalary','otherIncome','actualUnit','fmvAtBuy','compFreeShares','employeeContribShares','fmvAtWithdraw','withdrawCompFree','withdrawEmployeeContrib','basicDeductCount','rateNP','rateHI','rateLTC','rateEI','esopDeduct','withdrawActualUnit','escrowYears','otherDeductions'
+      'prevYearSalary','currYearSalary','otherIncome','actualUnit','fmvAtBuy','compFreeShares','employeeContribShares','fmvAtWithdraw','withdrawCompFree','withdrawEmployeeContrib','basicDeductCount','rateNP','rateHI','rateLTC','rateEI','esopDeduct','otherDeductions','withdrawActualUnit','escrowYears'
     ];
 
     function bindMasks(){
@@ -225,12 +226,12 @@
         el.addEventListener('input', handler);
         el.value = fmt(toNumber(el.value));
       }
-      // 날짜 입력은 마스킹 제외
     }
 
     function read(){
       const v = {};
       for (const id of allFieldIds) v[id] = toNumber($(id)?.value || 0);
+      // 정수화 필요한 항목들(주식 수/인원)
       v.compFreeShares = Math.max(0, Math.floor(v.compFreeShares));
       v.employeeContribShares = Math.max(0, Math.floor(v.employeeContribShares));
       v.withdrawCompFree = Math.max(0, Math.floor(v.withdrawCompFree));
@@ -242,6 +243,7 @@
       return v;
     }
 
+    // 근로소득공제(간편 근사식)
     function earnedIncomeDeduction(gross){
       const x = Math.max(0, gross);
       if (x <= 12000000) return x*0.7;
@@ -251,7 +253,8 @@
       return 16000000 + (x-150000000)*0.02;
     }
 
-    function socialInsuranceEmployeePortion(prevGross, rateNP, rateHI, rateLTC, rateEI){
+    // 4대보험(근로자부담) 추정: 전기 총급여 기준
+    function socialInsurance(prevGross, rateNP, rateHI, rateLTC, rateEI){
       const np = prevGross * (rateNP/100);
       const hi = prevGross * (rateHI/100);
       const ltc = hi * (rateLTC/100);
@@ -271,16 +274,16 @@
     function compute(){
       const v = read();
 
-      // 한도/단가(기본)
+      // 1) 과세이연 한도, 매입가액(일반), 한도 주식 수
       const deferralLimitAmt = Math.max(v.prevYearSalary * 0.20, 5000000);
       const buyBasisGeneral = Math.max(v.actualUnit, Math.floor(v.fmvAtBuy * 0.7));
       const limitShares = buyBasisGeneral > 0 ? Math.floor(deferralLimitAmt / buyBasisGeneral) : 0;
 
       const compWithinLimit = Math.min(v.compFreeShares, limitShares);
       const compOverLimit   = Math.max(v.compFreeShares - compWithinLimit, 0);
-      const overlimitEarnedIncomeAtAllocation = compOverLimit * buyBasisGeneral;
+      const overlimitEarnedIncomeAtAllocation = compOverLimit * buyBasisGeneral; // 배정시 과세 참고치
 
-      // 인출 과세 단가: 인출대상 실지취득단가를 우선 반영하여 매입가액 산출
+      // 2) 인출 과세 단가: 인출대상 실지취득단가 반영
       const buyBasisForWithdraw = Math.max(v.withdrawActualUnit, Math.floor(v.fmvAtBuy * 0.7));
       const taxableUnit = Math.min(buyBasisForWithdraw, v.fmvAtWithdraw);
 
@@ -288,7 +291,7 @@
       const taxableWithdrawFromEmployee = Math.min(v.withdrawEmployeeContrib, v.employeeContribShares);
       const taxableWithdrawShares = taxableWithdrawFromComp + taxableWithdrawFromEmployee;
 
-      // 보유기간 및 비과세율
+      // 3) 보유기간·비과세율
       const totalYears = yearsBetween(v.acqDate, v.wdDate);
       const afterEscrowYears = Math.max(0, totalYears - (v.escrowYears || 0));
       let exemptRate = 0;
@@ -300,10 +303,10 @@
       const exemptAmount = Math.round(earnedIncomeAtWithdrawGross * exemptRate);
       const earnedIncomeAtWithdraw = Math.max(0, earnedIncomeAtWithdrawGross - exemptAmount);
 
-      // 과세표준 근사
+      // 4) 과세표준 근사 및 세율: 전기 총급여로 4대보험 추정, 기타/ESOP 소득공제 차감
       const eid = earnedIncomeDeduction(v.currYearSalary);
-      const si = socialInsuranceEmployeePortion(v.prevYearSalary, v.rateNP, v.rateHI, v.rateLTC, v.rateEI);
-      const basicDeduction = v.basicDeductCount * 1500000;
+      const si = socialInsurance(v.prevYearSalary, v.rateNP, v.rateHI, v.rateLTC, v.rateEI);
+      const basicDeduction = v.basicDeductCount * 1500000; // 1인 150만원 가정
       const earnedBase = Math.max(0, v.currYearSalary - eid - si.total);
       const approxTaxableIncome = Math.max(0, earnedBase + v.otherIncome - basicDeduction - v.esopDeduct - v.otherDeductions);
 
@@ -492,7 +495,7 @@
     }
 
     function bindActions(){
-      // 4대보험율 토글
+      // 4대보험율 편집 토글
       $('toggleSI').addEventListener('click', () => {
         ['rateNP','rateHI','rateLTC','rateEI'].forEach(id => {
           const el = $(id);
@@ -505,7 +508,7 @@
           prevYearSalary:'0', currYearSalary:'0', otherIncome:'0', actualUnit:'0', fmvAtBuy:'0',
           compFreeShares:'0', employeeContribShares:'0', fmvAtWithdraw:'0', withdrawCompFree:'0', withdrawEmployeeContrib:'0',
           basicDeductCount:'1', rateNP:'4.5', rateHI:'3.545', rateLTC:'12.95', rateEI:'0.9',
-          esopDeduct:'4,000,000', withdrawActualUnit:'0', escrowYears:'1', otherDeductions:'0'
+          esopDeduct:'4,000,000', otherDeductions:'0', withdrawActualUnit:'0', escrowYears:'1'
         };
         for (const id of Object.keys(defaults)) $(id).value = defaults[id];
         $('isSME').checked = false;
@@ -531,7 +534,7 @@
           ['항목','값'],
           ['직전연도 총급여액', d.v.prevYearSalary],
           ['올해 예상 총급여액', d.v.currYearSalary],
-          ['근로소득 외 종합소득액', d.v.otherIncome],
+          ['근로소득 외 종합소득금액', d.v.otherIncome],
           ['중소기업 여부', d.v.isSME ? 'Y':'N'],
           ['실지취득단가(일반)', d.v.actualUnit],
           ['취득시 시가', d.v.fmvAtBuy],
@@ -565,9 +568,8 @@
           ['추정 한계세율(지방세 포함)', d.marginalRateWithLocal],
           ['예상 추가세금(근사)', d.estimatedAdditionalTax]
         ];
-        const csv = rows.map(r => r.join(',')).join('
-');
-        const blob = new Blob(["﻿" + csv], {type: 'text/csv;charset=utf-8;'});
+        const csv = rows.map(r => r.join(',')).join('\n');
+        const blob = new Blob(["\ufeff" + csv], {type: 'text/csv;charset=utf-8;'});
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = 'esop_calc_result.csv';
